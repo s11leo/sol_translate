@@ -142,3 +142,179 @@ pub struct UpdateAdmin<'info> {
     pub new_admin: SystemAccount<'info>,
 }
 ```
+Извините за путаницу. Вот перевод вашего текста на русский язык:
+
+```markdown
+
+## Демо
+
+Для этого демо мы создадим простую программу "хранилище" (vault), подобную программе, использованной в уроке по авторизации подписанта (Signer Authorization) и уроке проверки владельца (Owner Check). Как и в тех демонстрациях, мы покажем в этом демо, как отсутствие проверки валидации данных может позволить вытеканию из хранилища.
+
+## 1. Начало
+
+Для начала загрузите стартовый код с ветки `starter` из этого репозитория. В стартовом коде уже есть программа с двумя инструкциями и структура для тестового файла.
+
+Инструкция `initialize_vault` инициализирует новую учетную запись Vault и новую учетную запись TokenAccount. Учетная запись Vault будет содержать адрес учетной записи токена, авторитет хранилища и учетную запись токена для вывода.
+
+Авторитет новой учетной записи токена будет установлен как хранилище, PDA программы. Это позволяет учетной записи Vault подписывать трансфер токенов с учетной записи токена.
+
+Инструкция `insecure_withdraw` переводит все токены в учетной записи токена хранилища на учетную запись токена `withdraw_destination`.
+
+Обратите внимание, что у этой инструкции есть проверка подписанта на авторитет и проверка владельца для Vault. Однако нигде в проверке учетных записей или логике инструкции нет кода, который проверяет, что учетная запись авторитета, переданная в инструкцию, соответствует учетной записи авторитета в Vault.
+
+```rust
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount};
+
+declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+
+#[program]
+pub mod account_data_matching {
+    use super::*;
+
+    pub fn initialize_vault(ctx: Context<InitializeVault>) -> Result<()> {
+        ctx.accounts.vault.token_account = ctx.accounts.token_account.key();
+        ctx.accounts.vault.authority = ctx.accounts.authority.key();
+        ctx.accounts.vault.withdraw_destination = ctx.accounts.withdraw_destination.key();
+        Ok(())
+    }
+
+    pub fn insecure_withdraw(ctx: Context<InsecureWithdraw>) -> Result<()> {
+        let amount = ctx.accounts.token_account.amount;
+
+        let seeds = &[b"vault".as_ref(), &[*ctx.bumps.get("vault").unwrap()]];
+        let signer = [&seeds[..]];
+
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            token::Transfer {
+                from: ctx.accounts.token_account.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.withdraw_destination.to_account_info(),
+            },
+            &signer,
+        );
+
+        token::transfer(cpi_ctx, amount)?;
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct InitializeVault<'info> {
+    // ... (неизмененный)
+}
+
+#[derive(Accounts)]
+pub struct InsecureWithdraw<'info> {
+    // ... (неизмененный)
+}
+
+#[account]
+pub struct Vault {
+    // ... (неизмененный)
+}
+```
+
+## 2. Тестирование инструкции insecure_withdraw
+
+Чтобы продемонстрировать, что это проблема, давайте напишем тест, в котором учетная запись, отличная от авторитета хранилища, пытается вытянуть токены из хранилища.
+
+Файл теста включает код для вызова инструкции `initialize_vault`, используя кошелек-поставщик в качестве авторитета, и затем эмитирует 100 токенов на учетную запись токена хранилища.
+
+Добавьте тест для вызова инструкции `insecure_withdraw`. Используйте `withdrawDestinationFake` в качестве учетной записи `withdrawDestination` и `walletFake` в качестве авторитета. Затем отправьте транзакцию, используя `walletFake`.
+
+Поскольку нет проверок, которые проверяют, что учетная запись авторитета, переданная в инструкцию, соответствует значениям, сохраненным в учетной записи Vault, инициализированной в первом тесте, инструкция будет успешно обработана, и токены будут переданы на учетную запись `withdrawDestinationFake`.
+
+```javascript
+describe("account-data-matching", () => {
+  // ... (неизмененный)
+  it("Insecure withdraw", async () => {
+    const tx = await program.methods
+      .insecureWithdraw()
+      .accounts({
+        vault: vaultPDA,
+        tokenAccount: tokenPDA,
+        withdrawDestination: withdrawDestinationFake,
+        authority: walletFake.publicKey,
+      })
+      .transaction()
+
+    await anchor.web3.sendAndConfirmTransaction(connection, tx, [walletFake])
+
+    const balance = await connection.getTokenAccountBalance(tokenPDA)
+    expect(balance.value.uiAmount).to.eq(0)
+  })
+})
+```
+
+Запустите `anchor test`, чтобы убедиться, что обе транзакции завершатся успешно.
+
+```bash
+account-data-matching
+  ✔ Initialize Vault (811ms)
+  ✔ Insecure withdraw (403ms)
+```
+
+## 3. Добавление инструкции secure_withdraw
+
+Теперь давайте реализуем безопасную версию этой инструкции под названием `secure_withdraw`.
+
+Эта инструкция будет идентична инструкции `insecure_withdraw`, за исключением того, что мы будем использовать ограничение `has_one` в структуре проверки учетной записи
+
+ (`SecureWithdraw`), чтобы проверить, что учетная запись авторитета, переданная в инструкцию, соответствует учетной записи авторитета в учетной записи Vault. Таким образом, только правильная учетная запись авторитета может вытягивать токены из хранилища.
+
+```rust
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Mint, Token, TokenAccount};
+
+declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
+
+#[program]
+pub mod account_data_matching {
+    use super::*;
+    ...
+    pub fn secure_withdraw(ctx: Context<SecureWithdraw>) -> Result<()> {
+        let amount = ctx.accounts.token_account.amount;
+
+        let seeds = &[b"vault".as_ref(), &[*ctx.bumps.get("vault").unwrap()]];
+        let signer = [&seeds[..]];
+
+        let cpi_ctx = CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            token::Transfer {
+                from: ctx.accounts.token_account.to_account_info(),
+                authority: ctx.accounts.vault.to_account_info(),
+                to: ctx.accounts.withdraw_destination.to_account_info(),
+            },
+            &signer,
+        );
+
+        token::transfer(cpi_ctx, amount)?;
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct SecureWithdraw<'info> {
+    #[account(
+        seeds = [b"vault"],
+        bump,
+        has_one = token_account,
+        has_one = authority,
+        has_one = withdraw_destination,
+    )]
+    pub vault: Account<'info, Vault>,
+    #[account(
+        mut,
+        seeds = [b"token"],
+        bump,
+    )]
+    pub token_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub withdraw_destination: Account<'info, TokenAccount>,
+    pub token_program: Program<'info, Token>,
+    pub authority: Signer<'info>,
+}
+```
+```
