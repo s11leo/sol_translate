@@ -429,7 +429,7 @@ describe("account-data-matching", () => {
 'Program Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS failed: custom program error: 0x7
 
 d1'
-Note that Anchor specifies in the logs the account that causes the error (AnchorError caused by account: vault).
+Зверніть увагу, що в журналах Anchor вказано обліковий запис, який спричинив помилку (AnchorError caused by account: vault).
 
 ✔ Secure withdraw, expect error (77ms)
 ✔ Secure withdraw (10073ms)
